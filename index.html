@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2-Pane Viewer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; font-family: "Segoe UI", "Meiryo", sans-serif; }
+
+  :root {
+    --text-bg: #fafafa;
+    --text-color: #333;
+    --heading-color: #222;
+    --border-color: #ddd;
+    --resizer-color: #bbb;
+    --toggle-color: #aaa;
+  }
+  .dark {
+    --text-bg: #1e1e1e;
+    --text-color: #d4d4d4;
+    --heading-color: #e0e0e0;
+    --border-color: #444;
+    --resizer-color: #555;
+    --toggle-color: #666;
+  }
+
+  .container {
+    display: flex;
+    height: 100vh;
+  }
+
+  /* 左ペイン: テキスト */
+  #text-pane {
+    width: 50%;
+    height: 100%;
+    overflow-y: auto;
+    padding: 2rem 2.5rem;
+    background: var(--text-bg);
+    border-right: 1px solid var(--border-color);
+    line-height: 1.8;
+    font-size: 1rem;
+    color: var(--text-color);
+    position: relative;
+  }
+  #text-pane .section { padding-bottom: 1rem; }
+  #text-pane h1 { font-size: 1.5rem; margin: 0.8rem 0; color: var(--heading-color); }
+  #text-pane p  { margin-bottom: 0.8rem; }
+
+  #theme-toggle {
+    position: sticky;
+    top: 0;
+    float: right;
+    background: none;
+    border: none;
+    color: var(--toggle-color);
+    font-size: 0.85rem;
+    cursor: pointer;
+    padding: 2px 6px;
+    opacity: 0.4;
+    transition: opacity 0.2s;
+    z-index: 5;
+  }
+  #theme-toggle:hover { opacity: 1; }
+
+  /* 右ペイン: 画像 */
+  #image-pane {
+    width: 50%;
+    height: 100%;
+    background: #222;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  #image-pane img {
+    position: absolute;
+    top: 0;
+    left: 0;
+    transform-origin: 0 0;
+    cursor: grab;
+    max-width: none;
+    max-height: none;
+  }
+  #image-pane img.dragging { cursor: grabbing; }
+
+  #image-pane .placeholder {
+    color: #888;
+    font-size: 1.1rem;
+    text-align: center;
+    pointer-events: none;
+  }
+
+  /* 画像操作ヒント */
+  #image-controls {
+    position: absolute;
+    bottom: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0,0,0,0.55);
+    color: #ccc;
+    font-size: 0.75rem;
+    padding: 4px 14px;
+    border-radius: 4px;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+
+  /* リサイザー */
+  #resizer {
+    width: 5px;
+    cursor: col-resize;
+    background: var(--resizer-color);
+    flex-shrink: 0;
+    z-index: 10;
+  }
+  #resizer:hover { background: #888; }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <div id="text-pane">
+    <button id="theme-toggle" title="ライト/ダーク切替">☀</button>
+  </div>
+  <div id="resizer"></div>
+  <div id="image-pane">
+    <span class="placeholder">テキストを読み込んでいます…</span>
+    <div id="image-controls">ホイール: 拡大縮小 ／ ドラッグ: 移動 ／ ダブルクリック: リセット</div>
+  </div>
+</div>
+
+<script src="content.js"></script>
+<script>
+(function () {
+  const IMAGE_TAG_RE = /^\[@image:\s*(.+?)\]\s*$/;
+
+  const textPane  = document.getElementById('text-pane');
+  const imagePane = document.getElementById('image-pane');
+  const resizer   = document.getElementById('resizer');
+
+  let imgEl = null;
+  let scale = 1, tx = 0, ty = 0;
+  let dragging = false, dragStart = { x: 0, y: 0 }, txStart = 0, tyStart = 0;
+
+  document.getElementById('theme-toggle').addEventListener('click', function() {
+    document.documentElement.classList.toggle('dark');
+    this.textContent = document.documentElement.classList.contains('dark') ? '☾' : '☀';
+  });
+
+  if (typeof CONTENT === 'undefined') {
+    textPane.innerHTML = '<p style="color:red">content.js が見つかりません。index.html と同じフォルダに配置してください。</p>';
+  } else {
+    const { sections } = parseContent(CONTENT);
+    renderSections(sections);
+    setupScrollWatcher(sections);
+    if (sections.length) showImage(sections[0].image);
+  }
+
+  /** content.txt をパースしてセクション配列を返す */
+  function parseContent(raw) {
+    const lines = raw.split(/\r?\n/);
+    const sections = [];
+    let current = null;
+
+    for (const line of lines) {
+      const m = line.match(IMAGE_TAG_RE);
+      if (m) {
+        current = { image: m[1].trim(), lines: [] };
+        sections.push(current);
+      } else if (current) {
+        current.lines.push(line);
+      }
+    }
+    return { sections };
+  }
+
+  /** セクションをHTMLとして左ペインに描画 */
+  function renderSections(sections) {
+    const toggle = textPane.querySelector('#theme-toggle');
+    textPane.innerHTML = '';
+    if (toggle) textPane.appendChild(toggle);
+    sections.forEach((sec, i) => {
+      const div = document.createElement('div');
+      div.className = 'section';
+      div.dataset.index = i;
+
+      const html = sec.lines
+        .join('\n')
+        .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+        .split(/\n{2,}/)
+        .map(block => {
+          block = block.trim();
+          if (!block || block.startsWith('<h1>')) return block;
+          return `<p>${escapeHtml(block).replace(/\n/g, '<br>')}</p>`;
+        })
+        .join('\n');
+
+      div.innerHTML = html;
+      textPane.appendChild(div);
+    });
+  }
+
+  // === スクロール監視 → 画像切り替え ===
+  function setupScrollWatcher(sections) {
+    if (!sections.length) return;
+    const sectionEls = textPane.querySelectorAll('.section');
+
+    let currentIdx = 0;
+    textPane.addEventListener('scroll', () => {
+      const atBottom = textPane.scrollTop + textPane.clientHeight >= textPane.scrollHeight - 2;
+      let activeIdx = 0;
+      if (atBottom) {
+        activeIdx = sectionEls.length - 1;
+      } else {
+        const paneTop = textPane.scrollTop + textPane.clientHeight * 0.3;
+        sectionEls.forEach((el, i) => {
+          if (el.offsetTop <= paneTop) activeIdx = i;
+        });
+      }
+      if (activeIdx !== currentIdx) {
+        currentIdx = activeIdx;
+        showImage(sections[currentIdx].image);
+      }
+    });
+  }
+
+  function showImage(src) {
+    const placeholder = imagePane.querySelector('.placeholder');
+    if (placeholder) placeholder.remove();
+
+    if (!imgEl) {
+      imgEl = document.createElement('img');
+      imgEl.draggable = false;
+      imagePane.appendChild(imgEl);
+      attachImageHandlers();
+    }
+    imgEl.onerror = () => {
+      let msg = imagePane.querySelector('.error-msg');
+      if (!msg) { msg = document.createElement('div'); msg.className = 'error-msg'; imagePane.appendChild(msg); }
+      msg.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#f88;font-size:0.9rem;text-align:center;pointer-events:none;';
+      msg.textContent = '画像を読み込めません: ' + src;
+    };
+    imgEl.onload = () => {
+      const msg = imagePane.querySelector('.error-msg');
+      if (msg) msg.remove();
+      resetView();
+    };
+    imgEl.src = src;
+  }
+
+  function resetView() {
+    if (!imgEl || !imgEl.naturalWidth) return;
+    const pw = imagePane.clientWidth, ph = imagePane.clientHeight;
+    const iw = imgEl.naturalWidth, ih = imgEl.naturalHeight;
+    scale = Math.min(pw / iw, ph / ih);
+    tx = (pw - iw * scale) / 2;
+    ty = (ph - ih * scale) / 2;
+    applyTransform();
+  }
+
+  function applyTransform() {
+    if (!imgEl) return;
+    imgEl.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+  }
+
+  function attachImageHandlers() {
+    // ズーム（ホイール）
+    imagePane.addEventListener('wheel', e => {
+      e.preventDefault();
+      const rect = imagePane.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+
+      const oldScale = scale;
+      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      scale = Math.max(0.05, Math.min(50, scale * factor));
+
+      tx = mx - (mx - tx) * (scale / oldScale);
+      ty = my - (my - ty) * (scale / oldScale);
+      applyTransform();
+    }, { passive: false });
+
+    // ドラッグ（パン）
+    imagePane.addEventListener('pointerdown', e => {
+      if (e.button !== 0) return;
+      dragging = true;
+      dragStart = { x: e.clientX, y: e.clientY };
+      txStart = tx; tyStart = ty;
+      imgEl.classList.add('dragging');
+      imagePane.setPointerCapture(e.pointerId);
+    });
+    imagePane.addEventListener('pointermove', e => {
+      if (!dragging) return;
+      tx = txStart + (e.clientX - dragStart.x);
+      ty = tyStart + (e.clientY - dragStart.y);
+      applyTransform();
+    });
+    imagePane.addEventListener('pointerup', () => {
+      dragging = false;
+      if (imgEl) imgEl.classList.remove('dragging');
+    });
+
+    // ダブルクリックでリセット
+    imagePane.addEventListener('dblclick', () => resetView());
+
+    // ウィンドウリサイズ時にリセット
+    window.addEventListener('resize', () => resetView());
+  }
+
+  // === ペイン幅リサイザー ===
+  (function initResizer() {
+    let startX, startWidthLeft;
+    resizer.addEventListener('mousedown', e => {
+      startX = e.clientX;
+      startWidthLeft = textPane.getBoundingClientRect().width;
+      document.addEventListener('mousemove', onDrag);
+      document.addEventListener('mouseup', stopDrag);
+      document.body.style.cursor = 'col-resize';
+      e.preventDefault();
+    });
+    function onDrag(e) {
+      const newW = startWidthLeft + (e.clientX - startX);
+      const total = document.body.clientWidth - resizer.offsetWidth;
+      const pct = Math.max(15, Math.min(85, (newW / total) * 100));
+      textPane.style.width = pct + '%';
+      imagePane.style.width = (100 - pct) + '%';
+      resetView();
+    }
+    function stopDrag() {
+      document.removeEventListener('mousemove', onDrag);
+      document.removeEventListener('mouseup', stopDrag);
+      document.body.style.cursor = '';
+    }
+  })();
+
+  // === ユーティリティ ===
+  function escapeHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+})();
+</script>
+</body>
+</html>
