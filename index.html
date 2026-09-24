@@ -63,6 +63,37 @@
   }
   #theme-toggle:hover { opacity: 1; }
 
+  /* 自動スクロール操作パネル */
+  #autoscroll {
+    position: fixed;
+    left: 12px;
+    bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    background: var(--text-bg);
+    border: 1px solid var(--border-color);
+    opacity: 0.25;
+    transition: opacity 0.2s;
+    z-index: 20;
+  }
+  #autoscroll:hover, #autoscroll:focus-within { opacity: 1; }
+  #autoscroll button {
+    background: none;
+    border: none;
+    color: var(--toggle-color);
+    font-size: 0.8rem;
+    width: 1.4rem;
+    cursor: pointer;
+  }
+  #autoscroll input[type=range] {
+    width: 90px;
+    cursor: pointer;
+    accent-color: var(--toggle-color);
+  }
+
   /* 右ペイン: 画像 */
   #image-pane {
     width: 50%;
@@ -125,6 +156,10 @@
 <div class="container">
   <div id="text-pane">
     <button id="theme-toggle" title="ライト/ダーク切替">☀</button>
+  </div>
+  <div id="autoscroll">
+    <button id="autoscroll-toggle" title="自動スクロール 開始/停止">▶</button>
+    <input id="autoscroll-speed" type="range" min="5" max="200" value="40" title="スクロール速度">
   </div>
   <div id="resizer"></div>
   <div id="image-pane">
@@ -227,6 +262,46 @@
       }
     });
   }
+
+  // === 自動スクロール ===
+  (function initAutoScroll() {
+    const btn    = document.getElementById('autoscroll-toggle');
+    const slider = document.getElementById('autoscroll-speed');
+    let running = false, rafId = 0, lastTime = 0, pos = 0, lastSet = 0;
+
+    const maxScroll = () => textPane.scrollHeight - textPane.clientHeight;
+
+    function step(now) {
+      const dt = (now - lastTime) / 1000;
+      lastTime = now;
+      // 手動スクロールされた場合はその位置から続ける
+      if (Math.abs(textPane.scrollTop - lastSet) > 2) pos = textPane.scrollTop;
+      pos = Math.min(maxScroll(), pos + Number(slider.value) * dt);
+      textPane.scrollTop = pos;
+      lastSet = textPane.scrollTop;
+      if (pos >= maxScroll() - 1) { stop(); return; }
+      rafId = requestAnimationFrame(step);
+    }
+
+    function start() {
+      if (textPane.scrollTop >= maxScroll() - 1) textPane.scrollTop = 0;
+      pos = lastSet = textPane.scrollTop;
+      running = true;
+      btn.textContent = '❚❚';
+      lastTime = performance.now();
+      rafId = requestAnimationFrame(step);
+    }
+
+    function stop() {
+      running = false;
+      cancelAnimationFrame(rafId);
+      btn.textContent = '▶';
+    }
+
+    btn.addEventListener('click', () => running ? stop() : start());
+    slider.addEventListener('input', () => { slider.title = `スクロール速度: ${slider.value} px/秒`; });
+    slider.dispatchEvent(new Event('input'));
+  })();
 
   function showImage(src) {
     const placeholder = imagePane.querySelector('.placeholder');
